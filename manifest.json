@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "people-pulse",
   "display_name": "People Pulse",
-  "version": "0.1.0",
-  "description": "Ask Claude who you talk to most, and who you've drifted away from. Reads the contact history your Mac already keeps.",
-  "long_description": "macOS keeps a private log of who you message and call, across WhatsApp, iMessage, phone, Telegram, Signal, FaceTime and more, for Siri. People Pulse lets Claude read that log on your Mac, read-only, and answer: who do I talk to most, who did I use to talk to a lot but haven't for a while, and when did I last speak to someone. It only sees names, dates, counts and app names. There is no message content in the log. Unsaved phone numbers are masked. Needs Full Disk Access for Claude.",
+  "version": "0.2.0",
+  "description": "Ask Claude who you talk to most, who you've drifted away from, and who you're about to meet. Reads what your Mac already keeps.",
+  "long_description": "macOS keeps a private log of who you message and call, across WhatsApp, iMessage, phone, Telegram, Signal, FaceTime and more, for Siri. People Pulse lets Claude read that log on your Mac, read-only, and answer: who do I talk to most, who did I use to talk to a lot but haven't for a while, and when did I last speak to someone. From Apple's knowledge graph on the same Mac it adds where people work, prep for upcoming meetings, and Apple's own guesses about who is family. It only sees names, dates, counts and app names. There is no message content in the log. Unsaved phone numbers are masked. Needs Full Disk Access for Claude.",
   "author": {
     "name": "Ben Mateev",
     "url": "https://benmateev.com"
@@ -15,22 +15,51 @@
     "url": "https://github.com/benjaminmateev/people-pulse-mcp"
   },
   "license": "MIT",
-  "keywords": ["macos", "contacts", "relationships", "siri", "knowledge graph"],
+  "keywords": [
+    "macos",
+    "contacts",
+    "relationships",
+    "siri",
+    "knowledge graph"
+  ],
   "server": {
     "type": "node",
     "entry_point": "server/index.mjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.mjs"]
+      "args": [
+        "${__dirname}/server/index.mjs"
+      ]
     }
   },
   "tools": [
-    { "name": "top_contacts", "description": "Who you talk to most, one to one, across all your messaging apps and calls." },
-    { "name": "drifting", "description": "People you used to talk to a lot but haven't heard from in a while." },
-    { "name": "last_contact", "description": "When you last talked to someone, and on which apps." }
+    {
+      "name": "top_contacts",
+      "description": "Who you talk to most, one to one, across all your messaging apps and calls."
+    },
+    {
+      "name": "drifting",
+      "description": "People you used to talk to a lot but haven't heard from in a while."
+    },
+    {
+      "name": "last_contact",
+      "description": "When you last talked to someone, and on which apps."
+    },
+    {
+      "name": "meeting_prep",
+      "description": "Upcoming meetings, with when you last talked to each attendee."
+    },
+    {
+      "name": "inferred_family",
+      "description": "Who Apple's on-device models think is your family, with their scores."
+    }
   ],
   "compatibility": {
-    "platforms": ["darwin"],
-    "runtimes": { "node": ">=22.13.0" }
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "node": ">=22.13.0"
+    }
   }
 }
