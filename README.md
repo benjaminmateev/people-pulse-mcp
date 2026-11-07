@@ -7,6 +7,8 @@ Your Mac already knows. For Siri, macOS keeps a private log of who you message a
 - *"Who do I talk to the most these days?"*
 - *"Who did I use to talk to a lot, but haven't in a while?"*
 - *"When did I last speak to Anna?"*
+- *"Prep my meetings this week: when did I last talk to each person?"*
+- *"Who does my Mac think is my family?"*
 
 No apps to connect, no accounts, no data to import. Install, give permission, ask.
 
@@ -66,14 +68,18 @@ The first time, Claude asks whether it may use People Pulse. Click **Allow**.
 - When did I last talk to my brother, and how?
 - Who do I mostly call instead of text?
 - Make me a list of five people to message this week, and why.
+- Prep my meetings for tomorrow. Who haven't I spoken to in a while?
+- Who does Apple think is my family? How sure is it?
 
 ---
 
 ## What it can see, and what it can't
 
-**It sees:** names as they're saved in your contacts, the date of each message or call, how many there were, and which app was used.
+**It sees:** names as they're saved in your contacts, the date of each message or call, how many there were, and which app was used. From Apple's knowledge graph on the same Mac it also reads where people work, the titles and attendees of upcoming meetings, and Apple's own guesses about who is family.
 
 **It never sees what you wrote or said.** The log macOS keeps doesn't contain message text, so there's nothing to read.
+
+**The family guesses are Apple's, not ours.** macOS scores everyone on how likely they are to be family or a friend. People Pulse shows those scores as they are. They are machine guesses and can be plainly wrong.
 
 **It only reads.** People Pulse can't change, send or delete anything.
 
@@ -91,6 +97,10 @@ The first time, Claude asks whether it may use People Pulse. Click **Allow**.
 
 **The lists are short or empty.** The log only covers apps that report to your Mac, and only the last year or so. If you mostly use WhatsApp on Android, or messaging apps that don't report to macOS, there's little to show.
 
+**Meeting prep finds few meetings.** It uses the copy of your calendar inside Apple's graph, which only lists attendees for some meetings and can be a few hours behind.
+
+**Meeting prep or the family list says the layout is unknown.** Apple changes these files between macOS versions. They've been tested on macOS 26.6 to 27.0. The other questions still work.
+
 **Group chats are missing.** On purpose. People Pulse counts one-to-one conversations only, so a busy group chat doesn't make everyone in it look like a close friend.
 
 **Someone shows up twice.** The same person can be saved twice in your contacts (for example once in iCloud and once in Gmail). Merging them in the Contacts app (Card > Look for Duplicates) fixes it.
@@ -105,10 +115,10 @@ In Claude, open **Settings > Extensions**, find People Pulse, and remove it. The
 
 ## For developers
 
-One file, `server/index.mjs`, no dependencies. It uses Node's built-in SQLite and speaks MCP over stdio. It reads `~/Library/IntelligencePlatform/Artifacts/siri/remembers/view.db` read-only.
+One file, `server/index.mjs`, no dependencies. It uses Node's built-in SQLite and speaks MCP over stdio. It reads three files under `~/Library/IntelligencePlatform`, all read-only: the interaction log (`Artifacts/siri/remembers/view.db`), the knowledge graph (`graph.db`, for employers and upcoming meetings) and the relationship scorecard (`Artifacts/entityTagging/entityTagging.db`).
 
 ```sh
-node test.mjs                                   # self-check against a fake log
+node test.mjs                                   # self-check against fake stores
 claude mcp add people-pulse -- node "$PWD/server/index.mjs"   # use it in Claude Code
 ```
 
