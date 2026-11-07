@@ -1,0 +1,5 @@
+test.mjs
+README.md
+docs/
+*.mcpb
+.github/
