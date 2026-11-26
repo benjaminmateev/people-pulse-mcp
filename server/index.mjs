@@ -5,16 +5,18 @@
 // Zero dependencies: Node's built-in SQLite and a hand-written stdio JSON-RPC loop.
 import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 const APPLE_EPOCH = 978307200; // seconds from 1970 to 2001-01-01, Apple's clock start
 const IP = join(homedir(), "Library/IntelligencePlatform");
 export const DEFAULT_DB = join(IP, "Artifacts/siri/remembers/view.db");
-export const DEFAULT_PATHS = { log: DEFAULT_DB, graph: join(IP, "graph.db"), tagging: join(IP, "Artifacts/entityTagging/entityTagging.db") };
-const paths = (p) => (typeof p === "string" ? { ...DEFAULT_PATHS, log: p } : { ...DEFAULT_PATHS, ...p });
+const ADDRESS_BOOK = join(homedir(), "Library/Application Support/AddressBook");
+export const DEFAULT_PATHS = { log: DEFAULT_DB, graph: join(IP, "graph.db"), tagging: join(IP, "Artifacts/entityTagging/entityTagging.db"), contacts: ADDRESS_BOOK };
+const paths = (p) => (typeof p === "string" ? { ...DEFAULT_PATHS, log: p, contacts: null } : { ...DEFAULT_PATHS, ...p });
 const open = (path) => new DatabaseSync(path, { readOnly: true }); // never write: system daemons own these files
 
 const APPS = {
@@ -61,6 +63,73 @@ export function mask(name) {
   return n;
 }
 
+// Contacts: the AddressBook databases, the main one plus one per account under Sources/ (iCloud, Google...).
+// The same person usually sits in several of them, so cards are merged by name. Columns are checked first
+// because Apple changes them between macOS versions; a missing one just means that field is left out.
+const digits = (s) => String(s ?? "").replace(/\D/g, "").replace(/^0+/, ""); // +49 176 1 and 0176 1 both become a comparable string
+const samePhone = (a, b) => { const x = digits(a), y = digits(b); return x.length >= 4 && y.length >= 4 && (x.endsWith(y) || y.endsWith(x)); };
+const CARD = ["ZFIRSTNAME", "ZLASTNAME", "ZNICKNAME", "ZORGANIZATION", "ZJOBTITLE", "ZBIRTHDAY", "ZBIRTHDAYYEAR"];
+
+function readCards(db) {
+  const cols = (t) => new Set(db.prepare(`SELECT name FROM pragma_table_info('${t}')`).all().map((r) => r.name));
+  const rc = cols("ZABCDRECORD");
+  if (!rc.has("ZFIRSTNAME")) throw new Error("no such column: ZABCDRECORD.ZFIRSTNAME");
+  const pick = CARD.filter((c) => rc.has(c));
+  const by = (sql) => { const m = new Map(); try { for (const r of db.prepare(sql).all()) (m.get(r.o) ?? m.set(r.o, []).get(r.o)).push(r.v); } catch { /* table missing: skip */ } return m; };
+  const phones = by("SELECT ZOWNER o, ZFULLNUMBER v FROM ZABCDPHONENUMBER WHERE ZFULLNUMBER IS NOT NULL");
+  const mails = by("SELECT ZOWNER o, ZADDRESS v FROM ZABCDEMAILADDRESS WHERE ZADDRESS IS NOT NULL");
+  const notes = by("SELECT ZCONTACT o, ZTEXT v FROM ZABCDNOTE WHERE ZTEXT IS NOT NULL");
+  return db.prepare(`SELECT Z_PK pk, ${pick.join(", ")} FROM ZABCDRECORD`).all().map((r) => {
+    const first = r.ZFIRSTNAME?.trim() ?? "", last = r.ZLASTNAME?.trim() ?? "", company = r.ZORGANIZATION?.trim() || undefined;
+    const name = `${first} ${last}`.trim() || company;
+    if (!name) return null; // groups and empty cards
+    let birthday;
+    if (Number.isFinite(r.ZBIRTHDAY)) { // Apple seconds; +12h so a midnight stored in any timezone lands on the right day
+      const d = new Date((r.ZBIRTHDAY + APPLE_EPOCH + 43200) * 1000).toISOString();
+      birthday = r.ZBIRTHDAYYEAR > 1 ? d.slice(0, 10).replace(/^\d{4}/, r.ZBIRTHDAYYEAR) : "--" + d.slice(5, 10);
+    }
+    const note = (notes.get(r.pk) ?? [])[0]?.trim();
+    return { name, nickname: r.ZNICKNAME?.trim() || undefined, company, title: r.ZJOBTITLE?.trim() || undefined, birthday,
+      phones: phones.get(r.pk) ?? [], emails: mails.get(r.pk) ?? [], note: note && note.length <= 200 ? note : undefined };
+  }).filter(Boolean);
+}
+
+// All cards from all sources, one entry per person. With strict, a Mac that lets us open none of the files throws.
+export function contacts(dir = ADDRESS_BOOK, strict = false) {
+  if (!dir) return [];
+  let files = [join(dir, "AddressBook-v22.abcddb")];
+  try { files = files.concat(readdirSync(join(dir, "Sources")).map((s) => join(dir, "Sources", s, "AddressBook-v22.abcddb"))); } catch { /* no accounts */ }
+  const merged = new Map();
+  let opened = 0, failure;
+  for (const f of files) {
+    let db;
+    try { db = open(f); } catch (e) { failure ??= e; continue; }
+    try {
+      for (const c of readCards(db)) {
+        const key = c.name.toLowerCase(), m = merged.get(key);
+        if (!m) { merged.set(key, c); continue; }
+        for (const k of ["nickname", "company", "title", "birthday", "note"]) m[k] ??= c[k];
+        for (const k of ["phones", "emails"]) for (const v of c[k]) if (!m[k].some((x) => k === "phones" ? samePhone(x, v) : x.toLowerCase() === v.toLowerCase())) m[k].push(v);
+      }
+      opened++;
+    } catch (e) { failure ??= e; } finally { db.close(); }
+  }
+  if (strict && !opened) throw failure ?? new Error("unable to open database file");
+  return [...merged.values()];
+}
+
+// Enrichment only: if Contacts can't be read, answers just come without company and title.
+const cardsByName = (dir) => { try { return new Map(contacts(dir).map((c) => [c.name.toLowerCase(), c])); } catch { return new Map(); } };
+
+export function findContacts(query, limit = 10, dir = ADDRESS_BOOK) {
+  const q = String(query ?? "").trim().toLowerCase(), qd = /[a-z@]/.test(q) ? "" : digits(q);
+  if (!q) return [];
+  return contacts(dir, true).filter((c) =>
+    [c.name, c.nickname, c.company, c.title, ...c.emails].some((v) => v?.toLowerCase().includes(q)) ||
+    (qd.length >= 4 && c.phones.some((p) => samePhone(p, qd) || digits(p).includes(qd))))
+    .sort((a, b) => a.name.localeCompare(b.name)).slice(0, limit);
+}
+
 // The knowledge graph (graph.db) is a triple store. Names are PS33; a person's employer is a
 // reified PS500 statement whose PS45 facet points at the company entity ("md:<id>").
 const NAMES = "SELECT object FROM stable_graph WHERE subject = ? AND predicate = 'PS33' AND relationshipId = 0";
@@ -71,21 +140,24 @@ FROM stable_graph e JOIN stable_graph n ON n.subject = e.subject AND n.predicate
 WHERE e.predicate = 'PS500' AND e.relationshipPredicate = 'PS45'`;
 
 // Employers are a bonus: if the graph can't be read, answers just come without them.
-export function employers(graphPath) {
+export function employers(graphPath, contactsDir = null) {
+  let out = new Map();
   try {
     const db = open(graphPath);
-    try { return new Map(db.prepare(EMPLOYERS).all().filter((r) => r.org).map((r) => [r.name.toLowerCase(), r.org])); }
+    try { out = new Map(db.prepare(EMPLOYERS).all().filter((r) => r.org).map((r) => [r.name.toLowerCase(), r.org])); }
     finally { db.close(); }
-  } catch { return new Map(); }
+  } catch { /* no graph */ }
+  for (const [n, c] of cardsByName(contactsDir)) if (c.company && !out.has(n)) out.set(n, c.company); // Contacts fills the gaps
+  return out;
 }
 
 export function people(p = DEFAULT_PATHS, recentDays = 90, now = Date.now() / 1000) {
-  const { log, graph } = paths(p), emp = employers(graph);
+  const { log, graph, contacts: cdir } = paths(p), emp = employers(graph, cdir), cards = cardsByName(cdir);
   const db = open(log);
   try {
     const since = now - APPLE_EPOCH - recentDays * 86400;
     return db.prepare(SQL).all(since).map((r) => ({
-      name: mask(r.name), raw: r.name.toLowerCase(), employer: emp.get(r.name.toLowerCase()),
+      name: mask(r.name), raw: r.name.toLowerCase(), employer: emp.get(r.name.toLowerCase()), title: cards.get(r.name.toLowerCase())?.title,
       total: r.total, recent: r.recent ?? 0,
       last: new Date((r.last + APPLE_EPOCH) * 1000).toISOString().slice(0, 10),
       daysSilent: Math.floor((now - r.last - APPLE_EPOCH) / 86400),
@@ -94,7 +166,7 @@ export function people(p = DEFAULT_PATHS, recentDays = 90, now = Date.now() / 10
   } finally { db.close(); }
 }
 
-const who = (r) => r.employer ? `${r.name} (${r.employer})` : r.name;
+const who = (r) => r.employer || r.title ? `${r.name} (${[r.employer, r.title].filter(Boolean).join(", ")})` : r.name;
 const line = (r) => `- ${who(r)}: last ${r.last} (${r.daysSilent} days ago), ${r.recent} recent / ${r.total} total, via ${r.apps}`;
 const int = (v, d, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) && v !== null && v !== "" ? Math.round(+v) : d));
 
@@ -116,7 +188,7 @@ const when = (appleTs) => new Date((appleTs + APPLE_EPOCH) * 1000).toLocaleStrin
 
 export function meetings(p = DEFAULT_PATHS, days = 7, now = Date.now() / 1000) {
   const P = paths(p), byName = new Map(people(P, 90, now).map((r) => [r.raw, r]));
-  const emp = employers(P.graph), db = open(P.graph);
+  const emp = employers(P.graph, P.contacts), db = open(P.graph);
   try {
     const names = db.prepare(NAMES), from = now - APPLE_EPOCH, seen = new Set(), out = [];
     for (const m of db.prepare(MEETINGS).all(from, from + days * 86400)) {
@@ -145,7 +217,7 @@ export function circle(p = DEFAULT_PATHS, minScore = 0.5, now = Date.now() / 100
     if (!cols.has("family")) throw new Error("no such column: entity_tagging.family");
     const roles = ROLES.filter((c) => cols.has(c)), pick = ["family", "friend", ...roles].filter((c) => cols.has(c));
     const owner = new Set(g.prepare("SELECT CAST(subject AS TEXT) s FROM stable_graph WHERE predicate = 'nm_isCurrentUser'").all().map((r) => r.s));
-    const names = g.prepare(NAMES), emp = employers(P.graph);
+    const names = g.prepare(NAMES), emp = employers(P.graph, P.contacts);
     // The owner often exists more than once (old work cards, "BENJAMEN MATEEV"): drop look-alikes of their name.
     const sig = (n) => { const w = n.toLowerCase().replace(/\[.*?\]|\(.*?\)/g, " ").match(/\p{L}+/gu) ?? []; return w.length > 1 ? w[0].slice(0, 4) + " " + w.at(-1) : null; };
     const me = new Set([...owner].flatMap((id) => names.all(BigInt(id)).map((r) => sig(r.object))).filter(Boolean));
@@ -212,6 +284,22 @@ export const TOOLS = [
       if (!ms.length) return `No upcoming meetings with known attendees in the next ${days} days. Apple's graph only keeps attendees for some calendar events.`;
       return `${ms.length} meetings in the next ${days} days with people your Mac knows:\n` +
         ms.map((m) => `${m.when} · ${m.title}\n` + m.attendees.map((r) => `  - ${who(r)}: ${brief(r)}`).join("\n")).join("\n");
+    },
+  },
+  {
+    name: "find_contact",
+    description: "Look someone up in the Mac's Contacts (Apple Contacts, all accounts, read-only) by name, nickname, company, email or phone number. Phone numbers match however they are written (+49 176... or 0176...). Returns name, nickname, company, job title, phones, emails, birthday and a short note if there is one.",
+    inputSchema: { type: "object", required: ["query"], properties: {
+      query: { type: "string", description: "Part of a name, nickname, company, email address or phone number" },
+      limit: { type: "integer", description: "How many cards (default 10)", minimum: 1, maximum: 50 } } },
+    run: (a, p) => {
+      const q = String(a.query ?? "").trim();
+      if (!q) return "Give me a name, company, email or phone number to look up.";
+      const rs = findContacts(q, int(a.limit, 10, 1, 50), paths(p).contacts ?? undefined);
+      if (!rs.length) return `No contact matches "${q}".`;
+      return `${rs.length} contact${rs.length > 1 ? "s" : ""} found:\n` + rs.map((c) => [`- ${c.name}`, c.nickname && `nickname ${c.nickname}`, c.company && c.company !== c.name && c.company, c.title,
+        c.phones.length && `phone ${c.phones.join(", ")}`, c.emails.length && `email ${c.emails.join(", ")}`, c.birthday && `birthday ${c.birthday}`, c.note && `note: ${c.note.replace(/\s+/g, " ")}`]
+        .filter(Boolean).join(" | ")).join("\n");
     },
   },
   {

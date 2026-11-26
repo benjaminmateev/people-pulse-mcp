@@ -9,6 +9,7 @@ Your Mac already knows. For Siri, macOS keeps a private log of who you message a
 - *"When did I last speak to Anna?"*
 - *"Prep my meetings this week: when did I last talk to each person?"*
 - *"Who does my Mac think is my family?"*
+- *"What's Anna's number and where does she work?"*
 
 No apps to connect, no accounts, no data to import. Install, give permission, ask.
 
@@ -73,6 +74,12 @@ The first time, Claude asks whether it may use People Pulse. Click **Allow**.
 
 ---
 
+## Contacts lookup
+
+`find_contact` searches your Mac's Contacts by name, nickname, company, email or phone number (`+49 176…` and `0176…` match the same number) and returns name, nickname, company, job title, phones, emails, birthday and a short note if the card has one. It reads the Contacts files under `~/Library/Application Support/AddressBook`, including iCloud and other accounts, read-only, and merges people saved in several accounts. It can't change or add contacts. Company and job title also show up next to people in the other answers when a contact matches.
+
+---
+
 ## What it can see, and what it can't
 
 **It sees:** names as they're saved in your contacts, the date of each message or call, how many there were, and which app was used. From Apple's knowledge graph on the same Mac it also reads where people work, the titles and attendees of upcoming meetings, and Apple's own guesses about who is family.
@@ -115,7 +122,7 @@ In Claude, open **Settings > Extensions**, find People Pulse, and remove it. The
 
 ## For developers
 
-One file, `server/index.mjs`, no dependencies. It uses Node's built-in SQLite and speaks MCP over stdio. It reads three files under `~/Library/IntelligencePlatform`, all read-only: the interaction log (`Artifacts/siri/remembers/view.db`), the knowledge graph (`graph.db`, for employers and upcoming meetings) and the relationship scorecard (`Artifacts/entityTagging/entityTagging.db`).
+One file, `server/index.mjs`, no dependencies. It uses Node's built-in SQLite and speaks MCP over stdio. It reads the Contacts databases (`AddressBook-v22.abcddb`, plus one per account under `Sources/`) and three files under `~/Library/IntelligencePlatform`, all read-only: the interaction log (`Artifacts/siri/remembers/view.db`), the knowledge graph (`graph.db`, for employers and upcoming meetings) and the relationship scorecard (`Artifacts/entityTagging/entityTagging.db`).
 
 ```sh
 node test.mjs                                   # self-check against fake stores

@@ -1,10 +1,10 @@
 // Self-check against a tiny fake interaction log. Run: node test.mjs
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { handle, mask, people, meetings, circle } from "./server/index.mjs";
+import { handle, mask, people, meetings, circle, contacts, findContacts } from "./server/index.mjs";
 
 const path = join(mkdtempSync(join(tmpdir(), "pp-")), "view.db");
 const db = new DatabaseSync(path);
@@ -49,7 +49,31 @@ tg.exec("CREATE TABLE entity_tagging (mdid TEXT, family REAL, friend REAL, mothe
 const tr = tg.prepare("INSERT INTO entity_tagging VALUES (?, ?, ?, ?, ?)");
 tr.run(String(ANNA), .9, .1, .7, .1); tr.run(String(ME2), .96, 0, 0, 0); tr.run(String(CARL), .2, .9, 0, 0);
 tg.close();
-const P = { log: path, graph, tagging };
+// Fake AddressBook: the main file plus one account under Sources/. Anna sits in both (must merge into one card).
+const book = join(dir, "AddressBook"), abook = (file) => {
+  mkdirSync(join(file, ".."), { recursive: true });
+  const a = new DatabaseSync(file);
+  a.exec(`CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT, ZLASTNAME TEXT, ZNICKNAME TEXT, ZORGANIZATION TEXT, ZJOBTITLE TEXT, ZBIRTHDAY REAL, ZBIRTHDAYYEAR INTEGER);
+CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT);
+CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT);
+CREATE TABLE ZABCDNOTE (ZCONTACT INTEGER, ZTEXT TEXT);`);
+  return a;
+};
+const card = (a, f, l, o = {}) => {
+  const id = Number(a.prepare("INSERT INTO ZABCDRECORD (ZFIRSTNAME, ZLASTNAME, ZNICKNAME, ZORGANIZATION, ZJOBTITLE, ZBIRTHDAY, ZBIRTHDAYYEAR) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(f, l, o.nick ?? null, o.org ?? null, o.title ?? null, o.bday ?? null, o.year ?? null).lastInsertRowid);
+  for (const n of o.phones ?? []) a.prepare("INSERT INTO ZABCDPHONENUMBER VALUES (?, ?)").run(id, n);
+  for (const m of o.mails ?? []) a.prepare("INSERT INTO ZABCDEMAILADDRESS VALUES (?, ?)").run(id, m);
+  if (o.note) a.prepare("INSERT INTO ZABCDNOTE VALUES (?, ?)").run(id, o.note);
+};
+const main = abook(join(book, "AddressBook-v22.abcddb")), icloud = abook(join(book, "Sources", "ABC", "AddressBook-v22.abcddb"));
+card(main, "Anna", "Muster", { org: "Acme GmbH", title: "CTO", phones: ["+49 176 1234567"], bday: 5 * 365.25 * day, year: 1990 }); // 1:1 log name "Anna" is matched below
+card(icloud, "Anna", "Muster", { nick: "Annie", phones: ["0176 1234567", "+49 30 555 000"], mails: ["anna@acme.example"], note: "met at the fair" });
+card(icloud, "Zed", "Nobody", { org: "Zed Corp", mails: ["zed@zed.example"], note: "x".repeat(300), bday: 100 * day });
+card(icloud, null, null, {}); // empty card is ignored
+card(icloud, "Lotte", "Lang", { org: "Lang AG" });
+main.close(); icloud.close();
+const P = { log: path, graph, tagging, contacts: book };
 
 const rows = people(path);
 assert.ok(!rows.some((r) => r.name === "Besties"), "group chats are not people");
@@ -68,7 +92,31 @@ const fam = circle(P, 0.5);
 assert.deepEqual(fam.map((r) => r.name), ["Anna"], "owner look-alikes and low scores are dropped");
 assert.equal(fam[0].role[0], "mother");
 
+// Contacts: merged across sources, phone digits normalised, privacy-safe checks (counts and shapes only).
+const all = contacts(book);
+assert.equal(all.filter((c) => c.name === "Anna Muster").length, 1, "same person in two sources is one card");
+const am = all.find((c) => c.name === "Anna Muster");
+assert.equal(am.phones.length, 2, "same number written two ways is kept once");
+assert.ok(am.company && am.title && am.nickname && am.emails.length === 1 && /^1990-/.test(am.birthday), "fields merged from both sources");
+assert.ok(all.find((c) => c.name === "Zed Nobody").note === undefined, "long notes are dropped");
+assert.match(all.find((c) => c.name === "Zed Nobody").birthday, /^--\d\d-\d\d$/, "birthday without a year");
+assert.equal(all.length, 3, "empty cards are skipped");
+assert.equal(findContacts("anna", 10, book).length, 1, "name match");
+assert.equal(findContacts("annie", 10, book).length, 1, "nickname match");
+assert.equal(findContacts("ZED CORP", 10, book).length, 1, "company match, any case");
+assert.equal(findContacts("zed.example", 10, book).length, 1, "email match");
+assert.equal(findContacts("+49 176 1234567", 10, book).length, 1, "+49 phone form");
+assert.equal(findContacts("0176 1234567", 10, book).length, 1, "national phone form");
+assert.equal(findContacts("0177 7654321", 10, book).length, 0, "a different number does not match");
+assert.equal(findContacts("a", 2, book).length, 2, "limit applies");
+assert.equal(people(P).find((r) => r.name === "Anna").employer, "Acme", "graph employer wins over Contacts");
+assert.throws(() => findContacts("x", 5, join(dir, "nowhere")), /unable to open/, "no address book is an access error");
+
 const call = (name, args = {}) => handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, P).result.content[0].text;
+const ct = call("find_contact", { query: "annie" });
+assert.match(ct, /^1 contact found:\n- Anna Muster \| nickname Annie \| Acme GmbH \| CTO \| phone .* \| email .* \| birthday 1990-\d\d-\d\d \| note: met/);
+assert.match(call("find_contact", { query: "zzzzzz" }), /^No contact matches/);
+assert.match(call("find_contact", { query: " " }), /Give me a name/);
 assert.match(call("meeting_prep"), /Planning\n  - Anna \(Acme\): last .* via/);
 assert.match(call("meeting_prep"), /Carl Stranger: no 1:1 messages/);
 assert.match(call("inferred_family"), /Anna \(Acme\): family 90%, friend 10%, likely mother \(70%\)/);
@@ -77,9 +125,11 @@ assert.match(call("drifting"), /Old Friend/);
 assert.doesNotMatch(call("drifting"), /Anna/);
 assert.match(call("last_contact", { name: "old" }), /Old Friend: last .* 25 recent|Old Friend: last .* \/ 25 total/);
 assert.equal(handle({ jsonrpc: "2.0", method: "notifications/initialized" }), null);
-assert.equal(handle({ jsonrpc: "2.0", id: 2, method: "tools/list" }).result.tools.length, 5);
+assert.equal(handle({ jsonrpc: "2.0", id: 2, method: "tools/list" }).result.tools.length, 6);
 const denied = handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "top_contacts" } }, "/nonexistent/view.db").result;
 assert.ok(denied.isError && /Full Disk Access/.test(denied.content[0].text), "missing access explains the fix");
 const oldMac = handle({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "inferred_family" } }, { ...P, tagging: path }).result;
 assert.ok(oldMac.isError && /tested on macOS/.test(oldMac.content[0].text), "unknown store layout says so");
+const noBook = handle({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "find_contact", arguments: { query: "x" } } }, { ...P, contacts: join(dir, "nowhere") }).result;
+assert.ok(noBook.isError && /Full Disk Access/.test(noBook.content[0].text), "unreadable Contacts explains the fix");
 console.log("ok: all checks passed");
