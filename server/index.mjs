@@ -106,8 +106,10 @@ export function contacts(dir = ADDRESS_BOOK, strict = false) {
     try { db = open(f); } catch (e) { failure ??= e; continue; }
     try {
       for (const c of readCards(db)) {
-        const key = c.name.toLowerCase(), m = merged.get(key);
-        if (!m) { merged.set(key, c); continue; }
+        // Same person only if the name matches and a phone or email is shared: two different "Anna Müller" stay apart.
+        const key = c.name.toLowerCase(), list = merged.get(key) ?? merged.set(key, []).get(key);
+        const m = list.find((x) => x.phones.some((a) => c.phones.some((b) => samePhone(a, b))) || x.emails.some((a) => c.emails.some((b) => a.toLowerCase() === b.toLowerCase())));
+        if (!m) { list.push(c); continue; }
         for (const k of ["nickname", "company", "title", "birthday", "note"]) m[k] ??= c[k];
         for (const k of ["phones", "emails"]) for (const v of c[k]) if (!m[k].some((x) => k === "phones" ? samePhone(x, v) : x.toLowerCase() === v.toLowerCase())) m[k].push(v);
       }
@@ -115,7 +117,7 @@ export function contacts(dir = ADDRESS_BOOK, strict = false) {
     } catch (e) { failure ??= e; } finally { db.close(); }
   }
   if (strict && !opened) throw failure ?? new Error("unable to open database file");
-  return [...merged.values()];
+  return [...merged.values()].flat();
 }
 
 // Enrichment only: if Contacts can't be read, answers just come without company and title.
@@ -288,17 +290,19 @@ export const TOOLS = [
   },
   {
     name: "find_contact",
-    description: "Look someone up in the Mac's Contacts (Apple Contacts, all accounts, read-only) by name, nickname, company, email or phone number. Phone numbers match however they are written (+49 176... or 0176...). Returns name, nickname, company, job title, phones, emails, birthday and a short note if there is one.",
+    description: "Look someone up in the Mac's Contacts (Apple Contacts, all accounts, read-only) by name, nickname, company, email or phone number. Phone numbers match however they are written (+49 176... or 0176...). Returns name, nickname, company, job title, phones, emails and birthday. Needs at least 3 letters or 4 digits. Notes are left out unless include_notes is true; set it only when the user asks for the note.",
     inputSchema: { type: "object", required: ["query"], properties: {
       query: { type: "string", description: "Part of a name, nickname, company, email address or phone number" },
-      limit: { type: "integer", description: "How many cards (default 10)", minimum: 1, maximum: 50 } } },
+      limit: { type: "integer", description: "How many cards (default 10, max 25)", minimum: 1, maximum: 25 },
+      include_notes: { type: "boolean", description: "Also return the card's short note (default false; notes can hold codes and PINs)" } } },
     run: (a, p) => {
       const q = String(a.query ?? "").trim();
       if (!q) return "Give me a name, company, email or phone number to look up.";
-      const rs = findContacts(q, int(a.limit, 10, 1, 50), paths(p).contacts ?? undefined);
+      if (/[\p{L}@]/u.test(q) ? q.length < 3 : digits(q).length < 4) return "Give me at least 3 letters or 4 digits, so one lookup can't list the whole address book.";
+      const rs = findContacts(q, int(a.limit, 10, 1, 25), paths(p).contacts);
       if (!rs.length) return `No contact matches "${q}".`;
       return `${rs.length} contact${rs.length > 1 ? "s" : ""} found:\n` + rs.map((c) => [`- ${c.name}`, c.nickname && `nickname ${c.nickname}`, c.company && c.company !== c.name && c.company, c.title,
-        c.phones.length && `phone ${c.phones.join(", ")}`, c.emails.length && `email ${c.emails.join(", ")}`, c.birthday && `birthday ${c.birthday}`, c.note && `note: ${c.note.replace(/\s+/g, " ")}`]
+        c.phones.length && `phone ${c.phones.join(", ")}`, c.emails.length && `email ${c.emails.join(", ")}`, c.birthday && `birthday ${c.birthday}`, a.include_notes === true && c.note && `note: ${c.note.replace(/\s+/g, " ")}`]
         .filter(Boolean).join(" | ")).join("\n");
     },
   },
