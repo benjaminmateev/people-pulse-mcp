@@ -5,7 +5,7 @@
 // Zero dependencies: Node's built-in SQLite and a hand-written stdio JSON-RPC loop.
 import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
-import { readdirSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -354,7 +354,8 @@ export function handle(msg, p = DEFAULT_PATHS) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+const isMain = () => { try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; } };
+if (isMain()) { // realpath: /tmp and other symlinked launch paths
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (l) => {
     if (!l.trim()) return;
